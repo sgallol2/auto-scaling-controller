@@ -69,7 +69,7 @@ El instance profile de la EC2 solo necesita:
         "cloudwatch:GetMetricData"
       ],
       "Resource": "*"
-    }
+    },
     {
       "Effect": "Allow",
       "Action": [
@@ -91,7 +91,7 @@ El instance profile de la EC2 solo necesita:
         "elasticloadbalancing:DescribeTargetHealth"
       ],
       "Resource": "*"
-    },
+    }
   ]
 }
 ```
