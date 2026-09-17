@@ -46,6 +46,17 @@ func (e *Executor) scaleOut(ctx context.Context, current []string, n int) ([]str
 		LaunchTemplate: &ec2types.LaunchTemplateSpecification{
 			LaunchTemplateId: aws.String(e.cfg.LaunchTemplateID),
 		},
+		TagSpecifications: []ec2types.TagSpecification{
+			{
+				ResourceType: ec2types.ResourceTypeInstance,
+				Tags: []ec2types.Tag{
+					{
+						Key:   aws.String("role"),
+						Value: aws.String(e.cfg.AutoScalingGroupTag),
+					},
+				},
+			},
+		},
 	})
 	if err != nil {
 		return current, fmt.Errorf("ec2 RunInstances: %w", err)

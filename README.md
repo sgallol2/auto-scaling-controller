@@ -71,17 +71,52 @@ El instance profile de la EC2 solo necesita:
       "Resource": "*"
     },
     {
+      "Sid": "LaunchTaggedInstances",
       "Effect": "Allow",
-      "Action": [
-        "ec2:RunInstances",
-        "ec2:TerminateInstances",
-        "ec2:DescribeInstances",
-        "ec2:CreateTags"
-      ],
-      "Resource": "*",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringEquals": { "aws:RequestTag/role": "web-fleet" }
+      }
+    },
+    {
+      "Sid": "LaunchDependencies",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:*:*:network-interface/*",
+        "arn:aws:ec2:*:*:subnet/*",
+        "arn:aws:ec2:*:*:security-group/*",
+        "arn:aws:ec2:*::image/*",
+        "arn:aws:ec2:*:*:launch-template/*"
+      ]
+    },
+    {
+      "Sid": "TagInstancesDuringLaunch",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "RunInstances",
+          "aws:RequestTag/role": "web-fleet"
+        }
+      }
+    },
+    {
+      "Sid": "TerminateManagedInstances",
+      "Effect": "Allow",
+      "Action": "ec2:TerminateInstances",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
       "Condition": {
         "StringEquals": { "ec2:ResourceTag/role": "web-fleet" }
       }
+    },
+    {
+      "Sid": "DescribeInstances",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
     },
     {
       "Effect": "Allow",
@@ -90,15 +125,18 @@ El instance profile de la EC2 solo necesita:
         "elasticloadbalancing:DeregisterTargets",
         "elasticloadbalancing:DescribeTargetHealth"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:elasticloadbalancing:*:*:targetgroup/*"
     }
   ]
 }
 ```
 
-Nota: `ec2:RunInstances` no soporta condición por tag del recurso objetivo
-(porque el recurso aún no existe); en un endurecimiento posterior puedes
-acotarlo con `ec2:LaunchTemplate` como recurso específico en vez de `"*"`.
+El código añade `role=web-fleet` mediante `TagSpecifications` en cada llamada
+a `RunInstances`. Sustituye los comodines de región, cuenta, subnet,
+security group, AMI, Launch Template y Target Group por los ARN concretos de
+tu entorno para aplicar un mínimo privilegio más estricto. Las instancias
+iniciales configuradas en `AUTOSCALER_INSTANCE_IDS` también deben tener el
+tag `role=web-fleet` para que puedan terminarse durante un scale-in.
 
 ## Estrategias intercambiables/combinables en `analyze`
 
