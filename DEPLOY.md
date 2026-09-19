@@ -5,14 +5,46 @@ Esta guía utiliza recursos creados manualmente desde la consola de AWS y comand
 ## Arquitectura
 
 ```text
-k6 -> ALB -> Target Group -> instancias web
-                         ^
-                         |
-              EC2 controladora
-              -> CloudWatch, EC2 y ELBv2
+k6 -> ALB público (2 AZ)
+                            |
+                            v
+             Target Group -> instancias web privadas
+                                                            ^
+                                                            |
+                                        EC2 controladora privada
+                                        -> CloudWatch, EC2 y ELBv2
 ```
 
 El controlador no usa Auto Scaling Groups ni políticas gestionadas de AWS. Decide manualmente cuándo ejecutar `RunInstances` y `TerminateInstances`.
+
+### Topología recomendada para el MVP
+
+- **Dos Availability Zones**: necesarias para un Application Load Balancer
+    internet-facing.
+- **Dos subnets públicas**, una por AZ: solo para las interfaces del ALB. Deben
+    tener una ruta hacia un Internet Gateway.
+- **Una subnet privada de aplicación**: para la instancia web inicial y las
+    instancias creadas por el Launch Template. El código actual usa una única
+    `APP_SUBNET_ID`, por lo que todas las instancias web del MVP se lanzan en esa
+    subnet y, por tanto, en una sola AZ.
+- **Una subnet privada de controladora**: para la EC2 que ejecuta el proceso.
+    Debe tener salida HTTPS mediante NAT Gateway o VPC Endpoints para acceder a
+    CloudWatch, EC2 y ELBv2.
+
+Esta topología permite demostrar el autoescalado, pero no proporciona alta
+disponibilidad completa de la flota web porque el Launch Template apunta a una
+sola subnet/AZ. Para producción real habría que distribuir las instancias en
+varias AZ, por ejemplo usando varios Launch Templates o una estrategia de
+selección de subnet.
+
+### Alternativa simplificada para AWS Academy
+
+Si el laboratorio no ofrece NAT Gateway ni VPC Endpoints, puedes colocar la
+controladora y la subnet de aplicación en subnets públicas con salida por
+Internet Gateway. Mantén el puerto 80 de las instancias web permitido solo
+desde el Security Group del ALB y limita SSH a tu IP. Esta alternativa es
+válida para la demostración académica, pero es menos segura que la topología
+privada.
 
 ## Reglas de seguridad
 
