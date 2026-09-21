@@ -42,6 +42,10 @@ func (a *Analyzer) Smooth(rawValue float64, previousWindow []float64) (smoothedV
 // suavizado -- por eso threshold+histéresis y Moving Average son
 // composables sin acoplarse entre sí.
 func (a *Analyzer) Interpret(cpuValue float64, snapshot types.MetricSnapshot, state types.KnowledgeState) (types.Signal, string) {
+	if !snapshot.HasCPUData {
+		return types.MAINTAIN_CAPACITY, "no hay datos de CPU disponibles, se espera antes de decidir"
+	}
+
 	// Si hay targets unhealthy, prioriza mantener capacidad, no reducirla.
 	if snapshot.TotalTargets > 0 && snapshot.HealthyTargets < snapshot.TotalTargets {
 		return types.MAINTAIN_CAPACITY, "hay targets unhealthy, se espera antes de decidir"

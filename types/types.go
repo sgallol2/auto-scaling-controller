@@ -11,7 +11,7 @@ type Config struct {
 	AutoScalingGroupTag string // tag usado para identificar tus instancias, ej. "role=web"
 	TargetGroupARN      string
 	LaunchTemplateID    string
-	InitialInstanceIDs  []string // instancias gestionadas al arrancar el proceso
+	StateFilePath       string
 	SubnetIDs           []string
 	SecurityGroupIDs    []string
 	PollInterval        time.Duration
@@ -24,8 +24,12 @@ type Config struct {
 	ScaleInThreshold  float64 // ej. CPU < 30% -> considerar bajar
 	EvaluationPeriods int     // cuántas ventanas consecutivas deben cumplirse
 
-	CooldownDuration time.Duration // anti-oscilación
-	MetricWindow     time.Duration // ventana de agregación en CloudWatch
+	CooldownDuration      time.Duration // anti-oscilación
+	MetricWindow          time.Duration // ventana de agregación en CloudWatch
+	InstanceReadyTimeout  time.Duration
+	HealthCheckTimeout    time.Duration
+	DeregistrationDelay   time.Duration
+	OperationPollInterval time.Duration
 
 	// Estrategia de suavizado (independiente de la estrategia de umbral).
 	// Permite comparar "crudo + histéresis" vs "moving average + histéresis"
@@ -38,6 +42,7 @@ type Config struct {
 type MetricSnapshot struct {
 	Timestamp             time.Time
 	AvgCPUUtil            float64
+	HasCPUData            bool
 	RequestCountPerTarget float64
 	HealthyTargets        int
 	TotalTargets          int

@@ -16,12 +16,20 @@ import (
 )
 
 type Monitor struct {
-	cw  *cloudwatch.Client
-	elb *elasticloadbalancingv2.Client
+	cw  cloudWatchClient
+	elb elbClient
 	cfg types.Config
 }
 
-func New(cw *cloudwatch.Client, elb *elasticloadbalancingv2.Client, cfg types.Config) *Monitor {
+type cloudWatchClient interface {
+	GetMetricData(context.Context, *cloudwatch.GetMetricDataInput, ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error)
+}
+
+type elbClient interface {
+	DescribeTargetHealth(context.Context, *elasticloadbalancingv2.DescribeTargetHealthInput, ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetHealthOutput, error)
+}
+
+func New(cw cloudWatchClient, elb elbClient, cfg types.Config) *Monitor {
 	return &Monitor{cw: cw, elb: elb, cfg: cfg}
 }
 
@@ -40,7 +48,7 @@ func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (typ
 	start := end.Add(-m.cfg.MetricWindow)
 
 	if len(currentInstanceIDs) == 0 {
-		// No hay instancias activas todavía (ej. primer ciclo): no hay CPU que consultar.
+		// No hay instancias activas todavía: no hay CPU que consultar.
 		return types.MetricSnapshot{Timestamp: end}, nil
 	}
 
@@ -72,7 +80,7 @@ func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (typ
 	}
 
 	// Promediamos primero en el tiempo (por instancia) y luego entre
-	// instancias, para que una instancia con menos datapoints no pese de más.
+	// instancias
 	var sumOfInstanceAverages float64
 	var instancesWithData int
 	for _, result := range out.MetricDataResults {
@@ -109,6 +117,7 @@ func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (typ
 	return types.MetricSnapshot{
 		Timestamp:      end,
 		AvgCPUUtil:     avgCPU,
+		HasCPUData:     instancesWithData > 0,
 		HealthyTargets: healthy,
 		TotalTargets:   total,
 	}, nil
