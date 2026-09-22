@@ -1,0 +1,30 @@
+# Local state and runtime output
+*.json
+*.log
+controller.log
+
+# Build artifacts
+controller.exe
+controller
+bin/
+dist/
+
+# Local environment and credentials
+.env
+.env.*
+*.pem
+*.key
+credentials
+
+# AWS CLI generated files
+infra/generated/
+
+# Terraform state and local cache
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars
+infra/*.tfvars.json
+!infra/terraform.tfvars.example
+infra/crash.log
+infra/*.tfplan
