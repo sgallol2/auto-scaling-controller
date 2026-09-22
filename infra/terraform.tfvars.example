@@ -1,0 +1,21 @@
+aws_region         = "us-east-1"
+availability_zone_a = "us-east-1a"
+availability_zone_b = "us-east-1b"
+
+# AMIs must already exist and contain the application/controller artifacts.
+app_ami_id        = "ami-REPLACE_APP"
+controller_ami_id = "ami-REPLACE_CONTROLLER"
+key_name          = "mykey"
+
+app_instance_type        = "t2.micro"
+controller_instance_type = "t2.micro"
+
+# Keep these values aligned with the controller configuration.
+managed_instance_tag   = "web-fleet"
+use_moving_average     = false
+moving_average_window  = 3
+
+# Optional Bastion Host Configuration
+# bastion_ami_id        = "" # If empty, app_ami_id is used
+# bastion_instance_type = "t2.micro"
+# bastion_allowed_cidr  = "0.0.0.0/0"

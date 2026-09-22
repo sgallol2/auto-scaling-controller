@@ -1,320 +1,286 @@
-# Despliegue manual en AWS Academy
+````markdown
+# Despliegue con Terraform en AWS Academy
 
-Esta guía utiliza recursos creados manualmente desde la consola de AWS y comandos puntuales de AWS CLI para verificar el despliegue. No es necesario ejecutar `infra/deploy.ps1` ni usar Terraform o CloudFormation.
+Este es el único procedimiento de despliegue de infraestructura del proyecto.
+Terraform crea la VPC, las subredes, el NAT Gateway, los Security Groups, el
+ALB, el Target Group, el Launch Template, el IAM Instance Profile, la
+instancia web inicial y la EC2 controladora.
 
-## Arquitectura
+## Topología
 
 ```text
-k6 -> ALB público (2 AZ)
-                            |
+                        Availability Zone A       Availability Zone B
+                      +-----------------------+  +-----------------------+
+Internet -> ALB        | public subnet A       |  | public subnet B       |
+                      +-----------------------+  +-----------------------+
+                            | NAT Gateway
                             v
-             Target Group -> instancias web privadas
-                                                            ^
-                                                            |
-                                        EC2 controladora privada
-                                        -> CloudWatch, EC2 y ELBv2
+                      +-----------------------+
+                      | private web subnet A  | -> instancias web
+                      | private controller A  | -> EC2 controladora
+                      +-----------------------+
 ```
+````
 
-El controlador no usa Auto Scaling Groups ni políticas gestionadas de AWS. Decide manualmente cuándo ejecutar `RunInstances` y `TerminateInstances`.
+La aplicación web y la controladora están en dos subredes privadas distintas,
+pero ambas en `availability_zone_a`, según el diseño solicitado. El ALB usa
+subredes públicas en dos AZ porque un Application Load Balancer necesita como
+mínimo dos AZ. El NAT Gateway permite que la controladora privada acceda a las
+APIs de AWS.
 
-### Topología recomendada para el MVP
+Esta topología es adecuada para el MVP, pero la flota web queda en una sola
+AZ. Terraform no crea Auto Scaling Groups ni políticas gestionadas: el
+controlador sigue decidiendo manualmente cuándo llamar a EC2 y ELBv2.
 
-- **Dos Availability Zones**: necesarias para un Application Load Balancer
-    internet-facing.
-- **Dos subnets públicas**, una por AZ: solo para las interfaces del ALB. Deben
-    tener una ruta hacia un Internet Gateway.
-- **Una subnet privada de aplicación**: para la instancia web inicial y las
-    instancias creadas por el Launch Template. El código actual usa una única
-    `APP_SUBNET_ID`, por lo que todas las instancias web del MVP se lanzan en esa
-    subnet y, por tanto, en una sola AZ.
-- **Una subnet privada de controladora**: para la EC2 que ejecuta el proceso.
-    Debe tener salida HTTPS mediante NAT Gateway o VPC Endpoints para acceder a
-    CloudWatch, EC2 y ELBv2.
+## Requisitos
 
-Esta topología permite demostrar el autoescalado, pero no proporciona alta
-disponibilidad completa de la flota web porque el Launch Template apunta a una
-sola subnet/AZ. Para producción real habría que distribuir las instancias en
-varias AZ, por ejemplo usando varios Launch Templates o una estrategia de
-selección de subnet.
+- Cuenta AWS Academy activa.
+- Credenciales temporales configuradas fuera del repositorio, o una sesión
+  equivalente usada por el proveedor AWS de Terraform.
+- Terraform >= 1.5.
+- Una AMI de aplicación que escuche HTTP en el puerto 80.
+- Una AMI de controladora que contenga:
+- `/opt/autoscaler-controller/controller`
+- `/etc/autoscaler-controller.env`
+- `/etc/systemd/system/autoscaler-controller.service`
 
-### Alternativa simplificada para AWS Academy
+- Un key pair existente en la región elegida.
 
-Si el laboratorio no ofrece NAT Gateway ni VPC Endpoints, puedes colocar la
-controladora y la subnet de aplicación en subnets públicas con salida por
-Internet Gateway. Mantén el puerto 80 de las instancias web permitido solo
-desde el Security Group del ALB y limita SSH a tu IP. Esta alternativa es
-válida para la demostración académica, pero es menos segura que la topología
-privada.
+No guardes access keys, secret keys, session tokens, contraseñas ni archivos
+`.tfvars` reales en Git. `terraform.tfvars` está excluido por `.gitignore`.
 
-## Reglas de seguridad
+## Preparar las AMI
 
-- No se guardan access keys, secret keys, session tokens ni contraseñas en el repositorio.
-- Usa la sesión temporal de AWS Academy o el instance profile de la EC2.
-- No pegues credenciales en `/etc/autoscaler-controller.env`.
-- Los valores marcados como `<REEMPLAZAR>` son datos de tu cuenta y no deben convertirse en valores fijos del repositorio.
-
-## 1. Preparar las AMI
-
-Necesitas dos imágenes Linux.
-
-### AMI de aplicación
-
-Debe ejecutar una aplicación HTTP en el puerto 80 y responder con estado 2xx. Comprueba desde la propia instancia:
-
-```bash
-curl http://localhost/
-```
-
-La AMI debe incluir todo lo necesario para arrancar la aplicación sin intervención humana. El Launch Template añadirá la etiqueta:
-
-```text
-role=web-fleet
-```
-
-### AMI de la controladora
-
-Compila el binario desde tu equipo, sin incluir credenciales:
+Compila el controlador para Linux desde la raíz del proyecto:
 
 ```powershell
 $env:GOOS="linux"
 $env:GOARCH="amd64"
-go build -o controller .
+$env:CGO_ENABLED="0"
+go build -trimpath -o controller .
 Remove-Item Env:GOOS
 Remove-Item Env:GOARCH
+Remove-Item Env:CGO_ENABLED
+
 ```
 
-En la EC2 controladora prepara las rutas:
+Prepara una AMI Linux de controladora con el binario, las variables de entorno y el servicio:
 
 ```bash
 sudo useradd --system --home /opt/autoscaler-controller autoscaler
 sudo install -d -o autoscaler -g autoscaler /opt/autoscaler-controller
 sudo install -d -o autoscaler -g autoscaler /var/lib/autoscaler-controller
 sudo install -m 0755 controller /opt/autoscaler-controller/controller
-```
-
-Copia `infra/autoscaler-controller.service` a:
-
-```bash
 sudo install -m 0644 autoscaler-controller.service /etc/systemd/system/autoscaler-controller.service
+
 ```
 
-## 2. Crear Security Groups
+### Configuración del controlador y variables de entorno (`loadConfig`)
 
-Crea manualmente tres Security Groups en la VPC elegida.
+El controlador gestiona sus parámetros bajo dos esquemas (definidos en la función `loadConfig()`):
 
-### Security Group del ALB
+#### 1. Variables dinámicas (Leídas desde `/etc/autoscaler-controller.env`)
 
-Regla de entrada:
-
-| Protocolo | Puerto | Origen |
-|---|---:|---|
-| TCP | 80 | `0.0.0.0/0` para el experimento |
-
-Las reglas de salida deben permitir tráfico hacia el Security Group de las instancias web.
-
-### Security Group de las instancias web
-
-Regla de entrada:
-
-| Protocolo | Puerto | Origen |
-|---|---:|---|
-| TCP | 80 | Security Group del ALB |
-
-No abras el puerto 80 de las instancias web directamente a Internet.
-
-### Security Group de la controladora
-
-Permite SSH únicamente desde tu IP de laboratorio si necesitas acceder por terminal. Permite salida HTTPS para las APIs de AWS.
-
-Guarda estos IDs:
-
-```text
-ALB_SECURITY_GROUP_ID=<REEMPLAZAR>
-APP_SECURITY_GROUP_ID=<REEMPLAZAR>
-CONTROLLER_SECURITY_GROUP_ID=<REEMPLAZAR>
-```
-
-## 3. Crear Target Group
-
-En EC2 > Load Balancing > Target Groups:
-
-1. Tipo de target: **Instances**.
-2. Protocolo: **HTTP**.
-3. Puerto: `80`.
-4. VPC: la VPC seleccionada.
-5. Health check path: `/` o el endpoint real de la aplicación.
-6. Healthy threshold: por ejemplo `2`.
-7. Unhealthy threshold: por ejemplo `2`.
-8. Deregistration delay: `30` segundos, coherente con el controlador.
-
-Registra una instancia web inicial que tenga `role=web-fleet` y espera a que aparezca como `healthy`.
-
-Guarda:
-
-```text
-TARGET_GROUP_ARN=<REEMPLAZAR>
-```
-
-## 4. Crear Application Load Balancer
-
-En EC2 > Load Balancers:
-
-1. Tipo: **Application Load Balancer**.
-2. Scheme: `Internet-facing` para la demo desde tu equipo.
-3. Selecciona al menos dos subnets de Availability Zones distintas.
-4. Asigna el Security Group del ALB.
-5. Crea un listener HTTP en el puerto `80`.
-6. Reenvía las peticiones al Target Group anterior.
-
-Guarda el DNS del ALB:
-
-```text
-ALB_DNS_NAME=<REEMPLAZAR>
-```
-
-Comprueba:
-
-```powershell
-curl.exe http://<ALB_DNS_NAME>/
-```
-
-## 5. Crear Launch Template
-
-En EC2 > Launch Templates crea un template para las instancias web:
-
-1. AMI: la AMI de aplicación.
-2. Instance type: uno permitido por AWS Academy, por ejemplo `t2.micro` o `t3.micro` según la región.
-3. Key pair: el necesario para el laboratorio, si aplica.
-4. Security Group: `APP_SECURITY_GROUP_ID`.
-5. Subnet: la subnet de aplicación elegida.
-6. IAM instance profile: el de la aplicación, si la aplicación lo necesita.
-7. User data: solo el arranque de la aplicación, sin secretos.
-8. Resource tag:
-
-```text
-Key: role
-Value: web-fleet
-```
-
-Guarda:
-
-```text
-LAUNCH_TEMPLATE_ID=<REEMPLAZAR>
-APP_SUBNET_ID=<REEMPLAZAR>
-APP_AMI_ID=<REEMPLAZAR>
-```
-
-La subnet del template es obligatoria: el controlador llama a `RunInstances` usando únicamente el Launch Template.
-
-## 6. Crear el IAM role de la controladora
-
-En IAM:
-
-1. Crea un role para EC2.
-2. Como entidad confiable selecciona `EC2`.
-3. Crea una política inline usando `infra/controller-policy.json.template` como referencia.
-4. Sustituye `REGION`, `ACCOUNT_ID`, `SUBNET_ID`, `APP_SECURITY_GROUP_ID`, `AMI_ID`, `LAUNCH_TEMPLATE_ID`, `TARGET_GROUP_NAME` y `TARGET_GROUP_ID` por valores de tu cuenta.
-5. Revisa la política antes de guardarla.
-6. Asocia el role al instance profile de la EC2 controladora.
-
-Permisos necesarios:
-
-- `cloudwatch:GetMetricData`.
-- `ec2:DescribeInstances`.
-- `ec2:RunInstances` para el Launch Template y sus dependencias.
-- `ec2:CreateTags` solo durante `RunInstances`.
-- `ec2:TerminateInstances` solo para `role=web-fleet`.
-- Operaciones del Target Group.
-
-No añadas permisos de Auto Scaling, Application Auto Scaling o políticas de escalado gestionadas.
-
-## 7. Crear la EC2 controladora
-
-Lanza una instancia usando la AMI de la controladora:
-
-1. Selecciona la misma región y VPC.
-2. Asigna el Security Group de la controladora.
-3. Asocia el instance profile creado en el paso anterior.
-4. Usa una subnet con salida a Internet o conectividad hacia los endpoints de CloudWatch, EC2 y ELBv2.
-5. Conéctate por SSH desde tu IP de laboratorio.
-
-Configura el entorno en `/etc/autoscaler-controller.env`:
+Deben coincidir con los nombres exactos leídos por `os.Getenv`:
 
 ```bash
-sudo tee /etc/autoscaler-controller.env >/dev/null <<'EOF'
+sudo tee /etc/autoscaler-controller.env > /dev/null <<'EOF'
+# Firma de API y región implícita de AWS SDK Go v2
+AWS_REGION=us-east-1
+AWS_DEFAULT_REGION=us-east-1
+
+# Parámetros leídos por loadConfig()
 AUTOSCALER_INSTANCE_TAG=web-fleet
-AUTOSCALER_TARGET_GROUP_ARN=<TARGET_GROUP_ARN>
-AUTOSCALER_LAUNCH_TEMPLATE_ID=<LAUNCH_TEMPLATE_ID>
-AUTOSCALER_STATE_FILE=/var/lib/autoscaler-controller/state.json
+AUTOSCALER_TARGET_GROUP_ARN=arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/sample/xxxx
+AUTOSCALER_LAUNCH_TEMPLATE_ID=lt-xxxxxxxxxxxxxxxxx
+AUTOSCALER_STATE_FILE=/var/lib/autoscaler-controller/autoscaler-state.json
+
+# Opciones con valor por defecto
 AUTOSCALER_USE_MOVING_AVERAGE=false
 AUTOSCALER_MOVING_AVERAGE_WINDOW=3
 EOF
-sudo chmod 600 /etc/autoscaler-controller.env
+
+sudo chmod 0600 /etc/autoscaler-controller.env
+sudo chown autoscaler:autoscaler /etc/autoscaler-controller.env
+
 ```
 
-Activa el servicio:
+#### 2. Parámetros Hardcodeados en el Binario Go
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now autoscaler-controller
-sudo systemctl status autoscaler-controller
-sudo journalctl -u autoscaler-controller -f
-```
+Cualquier ajuste de los siguientes valores requiere **recompilar el binario** en Go:
 
-El proceso debe descubrir la instancia inicial mediante `DescribeInstances`. Si no encuentra ninguna instancia `pending` o `running` con `role=web-fleet`, se detendrá de forma segura.
+| Parámetro               | Valor Hardcodeado              | Descripción                                           |
+| ----------------------- | ------------------------------ | ----------------------------------------------------- |
+| `MinInstances`          | `1`                            | Mínimo de instancias en la flota                      |
+| `MaxInstances`          | `3`                            | Límite máximo de escalado horizontal                  |
+| `ScaleOutThreshold`     | `5.0` (% CPU)                  | Umbral para disparar un _Scale-Out_                   |
+| `ScaleInThreshold`      | `2.0` (% CPU)                  | Umbral para disparar un _Scale-In_                    |
+| `EvaluationPeriods`     | `2`                            | Muestras consecutivas requeridas para confirmar señal |
+| `CooldownDuration`      | `120s` (`120_000_000_000` ns)  | Tiempo de espera entre acciones de escalado           |
+| `MetricWindow`          | `5 min` (`300_000_000_000` ns) | Ventana temporal analizada en CloudWatch              |
+| `InstanceReadyTimeout`  | `5 min`                        | Tiempo límite de espera a que EC2 esté `running`      |
+| `HealthCheckTimeout`    | `5 min`                        | Tiempo límite para que el target pase a `healthy`     |
+| `DeregistrationDelay`   | `30s`                          | Tiempo de espera en estado `draining`                 |
+| `OperationPollInterval` | `10s`                          | Frecuencia de polling de estado durante operaciones   |
+| `PollInterval`          | `30s`                          | Frecuencia de ejecución del ciclo completo MAPE-K     |
 
-## 8. Verificar manualmente
+> **Nota:** En el despliegue con Terraform, el bloque `user_data` inyecta dinámicamente los valores reales de `AUTOSCALER_TARGET_GROUP_ARN` y `AUTOSCALER_LAUNCH_TEMPLATE_ID` obtenidos durante la creación de la infraestructura dentro de `/etc/autoscaler-controller.env`.
 
-Con AWS CLI configurado en tu sesión temporal:
+Crea una AMI a partir de esa instancia y usa su ID como `controller_ami_id`. La AMI de aplicación debe estar preparada de forma similar, pero con el servidor HTTP de la aplicación.
+
+## Configuración Terraform
+
+Desde `infra/`, crea un archivo local:
 
 ```powershell
-aws sts get-caller-identity
-aws ec2 describe-instances --filters "Name=tag:role,Values=web-fleet" "Name=instance-state-name,Values=pending,running" --region <REGION>
-aws elbv2 describe-target-health --target-group-arn <TARGET_GROUP_ARN> --region <REGION>
+Copy-Item .\terraform.tfvars.example .\terraform.tfvars
+
 ```
 
-En los logs de la controladora debes ver eventos JSON con campos como:
+Edita `terraform.tfvars` y reemplaza los valores de ejemplo:
 
-```text
-detected_signal, signal_confirmed, avg_cpu, current_instance_count, next_instance_count, execution_status
+```hcl
+aws_region          = "us-east-1"
+availability_zone_a = "us-east-1a"
+availability_zone_b = "us-east-1b"
+
+app_ami_id        = "ami-REPLACE_APP"
+controller_ami_id = "ami-REPLACE_CONTROLLER"
+key_name          = "REPLACE_KEY_PAIR"
+
+app_instance_type        = "t2.micro"
+controller_instance_type = "t2.micro"
+managed_instance_tag     = "web-fleet"
+use_moving_average       = false
+moving_average_window    = 3
+
 ```
 
-## 9. Demostración 10.5 con k6
+Los bloques CIDR predeterminados crean:
 
-Instala k6 fuera del repositorio y ejecuta desde tu equipo:
+- VPC: `10.20.0.0/16`.
+- Public A: `10.20.1.0/24` en AZ A.
+- Public B: `10.20.2.0/24` en AZ B.
+- Private web A: `10.20.11.0/24` en AZ A.
+- Private controller A: `10.20.12.0/24` en AZ A.
+
+Si esos rangos chocan con la red del laboratorio, cambia las variables CIDR.
+
+## Inicializar y revisar
+
+Desde la raíz del repositorio:
+
+```powershell
+terraform -chdir=infra init
+terraform -chdir=infra fmt -recursive
+terraform -chdir=infra validate
+terraform -chdir=infra plan -out=tfplan
+
+```
+
+Revisa especialmente el plan antes de aplicar. Debe crear una VPC completa y
+no modificar recursos ajenos al proyecto.
+
+## Aplicar
+
+```powershell
+terraform -chdir=infra apply tfplan
+
+```
+
+Terraform mostrará los outputs principales:
+
+- `load_balancer_dns_name`.
+- `target_group_arn`.
+- `launch_template_id`.
+- `initial_web_instance_id`.
+- `controller_instance_id`.
+- IDs de subredes públicas y privadas.
+
+La instancia web inicial se registra automáticamente en el Target Group. La EC2 controladora recibe mediante `user_data` el ARN del Target Group y el ID del Launch Template, configurando `AUTOSCALER_TARGET_GROUP_ARN` y `AUTOSCALER_LAUNCH_TEMPLATE_ID` en `/etc/autoscaler-controller.env` antes de activar `systemd`.
+
+## Verificar
+
+Consulta los outputs:
+
+```powershell
+terraform -chdir=infra output
+
+```
+
+Comprueba la aplicación mediante el DNS del ALB:
+
+```powershell
+$alb = terraform -chdir=infra output -raw load_balancer_dns_name
+curl.exe "http://$alb/"
+
+```
+
+Comprueba los targets:
+
+```powershell
+$targetGroup = terraform -chdir=infra output -raw target_group_arn
+aws elbv2 describe-target-health --target-group-arn $targetGroup --region us-east-1
+
+```
+
+Conéctate a la instancia controller usando el key pair y revisa:
+
+```bash
+sudo systemctl status autoscaler-controller
+sudo journalctl -u autoscaler-controller -f
+
+```
+
+La controladora debe descubrir la instancia inicial mediante `DescribeInstances`
+y producir eventos JSON con campos como `detected_signal`,
+`signal_confirmed`, `avg_cpu`, `current_instance_count`,
+`next_instance_count` y `execution_status`.
+
+## Demostración con k6
+
+Desde el equipo que tenga conectividad al ALB:
 
 ```powershell
 $env:TARGET_URL="http://<ALB_DNS_NAME>"
 $env:RAMP_SECONDS="120"
 $env:PEAK_VUS="20"
 k6 run .\load\k6\load-test.js
+
 ```
 
-Durante la demostración observa simultáneamente:
+Observa simultáneamente:
 
-1. La carga aumenta mediante k6.
-2. CloudWatch muestra el aumento de `CPUUtilization`.
-3. El log muestra `INCREASE_CAPACITY`.
-4. EC2 crea una nueva instancia etiquetada `role=web-fleet`.
-5. El controlador espera `running` y `healthy`.
-6. El ALB empieza a usar el nuevo target.
-7. Al reducirse la carga, aparece `REDUCE_CAPACITY`.
-8. El target se desregistra, se drenan conexiones y la instancia termina.
+1. Aumento de carga en k6.
+2. Aumento de `CPUUtilization` en CloudWatch por encima del **5.0%** (`ScaleOutThreshold`).
+3. Confirmación tras **2 periodos de evaluación consecutivos** (`EvaluationPeriods=2`).
+4. Decisión `INCREASE_CAPACITY` en los logs.
+5. Nueva instancia creada con la etiqueta especificada en `AUTOSCALER_INSTANCE_TAG`.
+6. Estado `running` y luego `healthy`.
+7. Entrada en periodo de **cooldown de 120 segundos** (`CooldownDuration`).
+8. Reducción de carga por debajo del **2.0%** (`ScaleInThreshold`).
+9. Decisión `REDUCE_CAPACITY` tras confirmación y cooldown.
+10. Drenaje (`DeregistrationDelay=30s`), desregistro y terminación de la instancia.
 
-No hagas cambios manuales durante la ejecución de la prueba. El intervalo normal es de dos minutos, la confirmación necesita dos evaluaciones y el health check puede añadir varios minutos.
+El controlador ejecuta un ciclo completo MAPE-K cada **30 segundos** (`PollInterval=30s`), por lo que la demostración completa puede tardar varios minutos.
 
-## Limpieza manual
+## Destruir el entorno
 
-Antes de terminar AWS Academy:
+Después del experimento:
 
-1. Detén el servicio en la EC2 controladora.
-2. Termina la EC2 controladora.
-3. Desregistra y termina las instancias web restantes.
-4. Elimina el Launch Template.
-5. Elimina el listener y el ALB.
-6. Elimina el Target Group.
-7. Elimina los Security Groups.
-8. Elimina el instance profile, role y política inline.
-9. Elimina volúmenes EBS o Elastic IPs que ya no uses.
+```powershell
+terraform -chdir=infra destroy
 
-Los scripts de `infra/` y el archivo k6 permanecen en el repositorio como artefactos opcionales, pero este procedimiento manual no depende de ellos.
+```
+
+Revisa el plan de destrucción y confirma que corresponde únicamente a los
+recursos del proyecto. El destroy elimina también el NAT Gateway y su Elastic
+IP, el ALB, el Target Group, las instancias, los Security Groups, el IAM role
+y la VPC.
+
+No subas `terraform.tfvars`, `.terraform/`, `*.tfstate` ni `tfplan` al
+repositorio.
+
+```
+
+```

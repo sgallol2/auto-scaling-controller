@@ -41,16 +41,16 @@ func loadConfig() types.Config {
 		StateFilePath:         valueOrDefault(os.Getenv("AUTOSCALER_STATE_FILE"), "autoscaler-state.json"),
 		MinInstances:          1,
 		MaxInstances:          3,
-		ScaleOutThreshold:     30.0,
-		ScaleInThreshold:      10.0,
+		ScaleOutThreshold:     8.0,
+		ScaleInThreshold:      3.0,
 		EvaluationPeriods:     2,
 		CooldownDuration:      120_000_000_000, // bloquea por 2 minutos scale-out/scale-in consecutivos
 		MetricWindow:          300_000_000_000, // los ultimos 5 minutos de CPUUtilization
 		InstanceReadyTimeout:  5 * time.Minute,
-		HealthCheckTimeout:    5 * time.Minute,   // tiempo máximo que esperamos a que un target pase a healthy
-		DeregistrationDelay:   30 * time.Second,  // tiempo que tarda un target en pasar a "draining" y dejar de recibir tráfico
-		OperationPollInterval: 10 * time.Second,  // cada 10s se consulta si la instancia está ready y healthy
-		PollInterval:          30 * time.Second,  // cada 30 segundos se ejecuta un ciclo completo MAPE-K
+		HealthCheckTimeout:    5 * time.Minute,  // tiempo máximo que esperamos a que un target pase a healthy
+		DeregistrationDelay:   30 * time.Second, // tiempo que tarda un target en pasar a "draining" y dejar de recibir tráfico
+		OperationPollInterval: 10 * time.Second, // cada 10s se consulta si la instancia está ready y healthy
+		PollInterval:          30 * time.Second, // cada 30 segundos se ejecuta un ciclo completo MAPE-K
 		UseMovingAverage:      useMovingAverage,
 		MovingAverageWindow:   movingAverageWindow,
 	}
@@ -139,6 +139,9 @@ func discoverManagedInstances(ctx context.Context, client *ec2.Client, tagValue 
 		output, err := client.DescribeInstances(ctx, input)
 		if err != nil {
 			return nil, fmt.Errorf("ec2 DescribeInstances: %w", err)
+		}
+		if output == nil {
+			return nil, fmt.Errorf("ec2 DescribeInstances devolvió respuesta nula")
 		}
 		for _, reservation := range output.Reservations {
 			for _, instance := range reservation.Instances {

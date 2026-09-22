@@ -19,8 +19,8 @@ func New(cfg types.Config) *Analyzer {
 // y el resto del pipeline sigue funcionando idéntico a como estaba antes:
 // threshold-based e histéresis no dependen de si el valor fue suavizado o no.
 func (a *Analyzer) Smooth(rawValue float64, previousWindow []float64) (smoothedValue float64, updatedWindow []float64) {
-	if !a.cfg.UseMovingAverage {
-		return rawValue, previousWindow // MA desactivado: pass-through
+	if !a.cfg.UseMovingAverage || a.cfg.MovingAverageWindow <= 0 {
+		return rawValue, previousWindow // MA desactivado o ventana inválida: pass-through
 	}
 
 	window := append(previousWindow, rawValue)

@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 
 	"autoscaler-controller/types"
 )
@@ -79,11 +80,16 @@ func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (typ
 		return types.MetricSnapshot{}, fmt.Errorf("cloudwatch GetMetricData: %w", err)
 	}
 
+	var metricResults []cwtypes.MetricDataResult
+	if out != nil {
+		metricResults = out.MetricDataResults
+	}
+
 	// Promediamos primero en el tiempo (por instancia) y luego entre
 	// instancias
 	var sumOfInstanceAverages float64
 	var instancesWithData int
-	for _, result := range out.MetricDataResults {
+	for _, result := range metricResults {
 		if len(result.Values) == 0 {
 			continue // instancia recién lanzada, aún sin datapoints (warm-up)
 		}
@@ -107,9 +113,14 @@ func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (typ
 		return types.MetricSnapshot{}, fmt.Errorf("elbv2 DescribeTargetHealth: %w", err)
 	}
 
-	healthy, total := 0, len(healthOut.TargetHealthDescriptions)
-	for _, t := range healthOut.TargetHealthDescriptions {
-		if t.TargetHealth.State == "healthy" {
+	var targetDescriptions []elbtypes.TargetHealthDescription
+	if healthOut != nil {
+		targetDescriptions = healthOut.TargetHealthDescriptions
+	}
+
+	healthy, total := 0, len(targetDescriptions)
+	for _, t := range targetDescriptions {
+		if t.TargetHealth != nil && t.TargetHealth.State == elbtypes.TargetHealthStateEnumHealthy {
 			healthy++
 		}
 	}

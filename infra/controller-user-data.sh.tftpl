@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+install -d -m 0750 /var/lib/autoscaler-controller
+cat >/etc/autoscaler-controller.env <<'ENV'
+AUTOSCALER_INSTANCE_TAG=web-fleet
+AUTOSCALER_TARGET_GROUP_ARN=${target_group_arn}
+AUTOSCALER_LAUNCH_TEMPLATE_ID=${launch_template_id}
+AUTOSCALER_STATE_FILE=${state_path}
+AUTOSCALER_USE_MOVING_AVERAGE=${use_moving_average}
+AUTOSCALER_MOVING_AVERAGE_WINDOW=${moving_average_window}
+ENV
+chmod 0600 /etc/autoscaler-controller.env
+systemctl daemon-reload
+systemctl enable --now autoscaler-controller

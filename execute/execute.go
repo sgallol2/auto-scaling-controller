@@ -37,12 +37,32 @@ type elbClient interface {
 	DescribeTargetHealth(context.Context, *elasticloadbalancingv2.DescribeTargetHealthInput, ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetHealthOutput, error)
 }
 
+func defaultSleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func New(ec2c ec2Client, elbc elbClient, cfg types.Config) *Executor {
 	return &Executor{
 		ec2Client: ec2c,
 		elbClient: elbc,
 		cfg:       cfg,
+		sleep:     defaultSleep,
 	}
+}
+
+func buildTargetDescriptions(ids []string) []elbtypes.TargetDescription {
+	targets := make([]elbtypes.TargetDescription, 0, len(ids))
+	for _, id := range ids {
+		targets = append(targets, elbtypes.TargetDescription{Id: aws.String(id)})
+	}
+	return targets
 }
 
 // Apply ejecuta la decisión y devuelve el nuevo set de instancias conocidas
@@ -80,6 +100,9 @@ func (e *Executor) scaleOut(ctx context.Context, current []string, n int) ([]str
 	if err != nil {
 		return current, fmt.Errorf("ec2 RunInstances: %w", err)
 	}
+	if runOut == nil {
+		return current, fmt.Errorf("ec2 RunInstances devolvió output nulo")
+	}
 
 	var newIDs []string
 	for _, inst := range runOut.Instances {
@@ -96,10 +119,7 @@ func (e *Executor) scaleOut(ctx context.Context, current []string, n int) ([]str
 		return e.rollbackInstances(ctx, current, newIDs, err)
 	}
 
-	targets := make([]elbtypes.TargetDescription, 0, len(newIDs))
-	for _, id := range newIDs {
-		targets = append(targets, elbtypes.TargetDescription{Id: aws.String(id)})
-	}
+	targets := buildTargetDescriptions(newIDs)
 	_, err = e.elbClient.RegisterTargets(ctx, &elasticloadbalancingv2.RegisterTargetsInput{
 		TargetGroupArn: aws.String(e.cfg.TargetGroupARN),
 		Targets:        targets,
@@ -124,6 +144,9 @@ func (e *Executor) scaleOut(ctx context.Context, current []string, n int) ([]str
 }
 
 func (e *Executor) scaleIn(ctx context.Context, current []string, n int) ([]string, error) {
+	if n <= 0 || len(current) == 0 {
+		return current, nil
+	}
 	if n > len(current) {
 		n = len(current)
 	}
@@ -131,10 +154,7 @@ func (e *Executor) scaleIn(ctx context.Context, current []string, n int) ([]stri
 	remaining := current[n:]
 
 	// 1) Desregistrar primero del target group (deja drenar conexiones)
-	targets := make([]elbtypes.TargetDescription, 0, len(toRemove))
-	for _, id := range toRemove {
-		targets = append(targets, elbtypes.TargetDescription{Id: aws.String(id)})
-	}
+	targets := buildTargetDescriptions(toRemove)
 	_, err := e.elbClient.DeregisterTargets(ctx, &elasticloadbalancingv2.DeregisterTargetsInput{
 		TargetGroupArn: aws.String(e.cfg.TargetGroupARN),
 		Targets:        targets,
@@ -184,6 +204,9 @@ func (e *Executor) waitForInstancesRunning(ctx context.Context, instanceIDs []st
 		if err != nil {
 			return fmt.Errorf("ec2 DescribeInstances esperando running: %w", err)
 		}
+		if output == nil {
+			return fmt.Errorf("ec2 DescribeInstances devolvió output nulo")
+		}
 		running := 0
 		for _, reservation := range output.Reservations {
 			for _, instance := range reservation.Instances {
@@ -198,7 +221,7 @@ func (e *Executor) waitForInstancesRunning(ctx context.Context, instanceIDs []st
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timeout esperando instancias running")
 		}
-		if err := e.sleep(ctx, e.cfg.OperationPollInterval); err != nil {
+		if err := e.sleepContext(ctx, e.cfg.OperationPollInterval); err != nil {
 			return fmt.Errorf("esperar instancias running: %w", err)
 		}
 	}
@@ -212,6 +235,9 @@ func (e *Executor) waitForTargetsHealthy(ctx context.Context, instanceIDs []stri
 		})
 		if err != nil {
 			return fmt.Errorf("elbv2 DescribeTargetHealth esperando healthy: %w", err)
+		}
+		if output == nil {
+			return fmt.Errorf("elbv2 DescribeTargetHealth devolvió output nulo")
 		}
 		healthy := make(map[string]bool, len(instanceIDs))
 		for _, description := range output.TargetHealthDescriptions {
@@ -232,7 +258,7 @@ func (e *Executor) waitForTargetsHealthy(ctx context.Context, instanceIDs []stri
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timeout esperando targets healthy")
 		}
-		if err := e.sleep(ctx, e.cfg.OperationPollInterval); err != nil {
+		if err := e.sleepContext(ctx, e.cfg.OperationPollInterval); err != nil {
 			return fmt.Errorf("esperar targets healthy: %w", err)
 		}
 	}
@@ -247,9 +273,12 @@ func (e *Executor) waitForTargetsUnused(ctx context.Context, instanceIDs []strin
 		if err != nil {
 			return fmt.Errorf("elbv2 DescribeTargetHealth esperando drenaje: %w", err)
 		}
+		if output == nil {
+			return fmt.Errorf("elbv2 DescribeTargetHealth devolvió output nulo")
+		}
 		active := make(map[string]bool, len(instanceIDs))
 		for _, description := range output.TargetHealthDescriptions {
-			if description.Target != nil && description.Target.Id != nil {
+			if description.Target != nil && description.Target.Id != nil && description.TargetHealth != nil {
 				state := description.TargetHealth.State
 				if state != elbtypes.TargetHealthStateEnumUnused {
 					active[aws.ToString(description.Target.Id)] = true
@@ -272,8 +301,15 @@ func (e *Executor) waitForTargetsUnused(ctx context.Context, instanceIDs []strin
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timeout esperando drenaje de targets")
 		}
-		if err := e.sleep(ctx, e.cfg.OperationPollInterval); err != nil {
+		if err := e.sleepContext(ctx, e.cfg.OperationPollInterval); err != nil {
 			return fmt.Errorf("esperar drenaje de targets: %w", err)
 		}
 	}
+}
+
+func (e *Executor) sleepContext(ctx context.Context, d time.Duration) error {
+	if e.sleep != nil {
+		return e.sleep(ctx, d)
+	}
+	return defaultSleep(ctx, d)
 }
