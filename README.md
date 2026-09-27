@@ -2,8 +2,7 @@
 
 Controlador de autoescalado horizontal en Go para ejecutarse como un proceso
 continuo en una única instancia EC2. Implementa un ciclo MAPE-K: Monitor,
-Analyze, Plan, Execute y Knowledge. El estado se mantiene en memoria y se
-respalda en un archivo JSON local; no se utiliza Lambda ni DynamoDB.
+Analyze, Plan, Execute y Knowledge.
 
 ## Estructura
 
@@ -202,13 +201,3 @@ descubrirse y terminarse durante un scale-in.
 - `AWS/ApplicationELB` → `DescribeTargetHealth` (vía API de ELBv2, no CloudWatch directamente) para `HealthyTargets`/`TotalTargets`.
 - Opcionales para extender: `TargetResponseTime`, `RequestCountPerTarget`, `HTTPCode_Target_5XX_Count` (todas en `AWS/ApplicationELB`), o métricas de memoria vía CloudWatch Agent (`CWAgent` namespace) si se decide incorporar memoria al criterio de escalado.
 
-
-## Qué falta para producción (fuera del alcance del reto, pero vale mencionarlo)
-
-- Reconciliación avanzada de operaciones parcialmente completadas, incluyendo
-  recuperación manual si falla también el rollback.
-- Ampliar los tests unitarios de `analyze` y `plan` con más casos de frontera.
-- Métricas propias (`cloudwatch:PutMetricData`) si quieres complementar CPU
-  con latencia percibida de la app.
-- Recuperación externa del estado si también se necesita tolerar la pérdida del
-  disco local de la EC2 controladora.
