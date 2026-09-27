@@ -1,6 +1,3 @@
-// Package execute implementa la fase "E" del MAPE-K: es el único módulo
-// con permiso de escritura sobre EC2/ELB. Aísla aquí el radio de impacto
-// de errores y facilita aplicar mínimo privilegio en el rol IAM.
 package execute
 
 import (
@@ -65,8 +62,6 @@ func buildTargetDescriptions(ids []string) []elbtypes.TargetDescription {
 	return targets
 }
 
-// Apply ejecuta la decisión y devuelve el nuevo set de instancias conocidas
-// (para que se persista en el Knowledge Base).
 func (e *Executor) Apply(ctx context.Context, d types.Decision, current []string) ([]string, error) {
 	switch {
 	case d.DeltaCount > 0:

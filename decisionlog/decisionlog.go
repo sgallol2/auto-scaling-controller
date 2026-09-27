@@ -1,6 +1,3 @@
-// Package decisionlog cumple el requisito de "toda decisión debe ser
-// registrada y explicable". Escribe a stdout en JSON estructurado, que el
-// agente de logs de la EC2 puede enviar a CloudWatch Logs.
 package decisionlog
 
 import (

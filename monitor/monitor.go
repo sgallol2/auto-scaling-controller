@@ -1,5 +1,3 @@
-// Package monitor implementa la fase "M" del MAPE-K: solo lee, nunca decide
-// ni actúa. Su única responsabilidad es producir un types.MetricSnapshot.
 package monitor
 
 import (
@@ -34,16 +32,6 @@ func New(cw cloudWatchClient, elb elbClient, cfg types.Config) *Monitor {
 	return &Monitor{cw: cw, elb: elb, cfg: cfg}
 }
 
-// Collect llama a CloudWatch (GetMetricData) para CPU promedio y a ELBv2
-// (DescribeTargetHealth) para saber cuántos targets están realmente sanos
-// -- esto último es clave para no contar instancias que aún están en
-// warm-up o unhealthy como capacidad disponible.
-//
-// currentInstanceIDs viene del KnowledgeState en memoria, no de una
-// dimensión "AutoScalingGroupName" -- como no usamos un Auto Scaling Group
-// gestionado, no existe esa agregación automática. Pedimos CPUUtilization
-// por cada InstanceId en la misma llamada (GetMetricData admite hasta 500
-// queries por request) y promediamos nosotros mismos.
 func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (types.MetricSnapshot, error) {
 	end := time.Now()
 	start := end.Add(-m.cfg.MetricWindow)
@@ -85,8 +73,6 @@ func (m *Monitor) Collect(ctx context.Context, currentInstanceIDs []string) (typ
 		metricResults = out.MetricDataResults
 	}
 
-	// Promediamos primero en el tiempo (por instancia) y luego entre
-	// instancias
 	var sumOfInstanceAverages float64
 	var instancesWithData int
 	for _, result := range metricResults {

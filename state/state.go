@@ -1,4 +1,3 @@
-// Package state persists the controller knowledge in a local JSON file.
 package state
 
 import (

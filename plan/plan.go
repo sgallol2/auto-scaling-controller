@@ -1,5 +1,3 @@
-// Package plan implementa la fase "P" del MAPE-K: decide CUÁNTAS instancias
-// añadir o quitar, respetando límites (min/max) y el cooldown.
 package plan
 
 import (
@@ -16,10 +14,6 @@ func New(cfg types.Config) *Planner {
 	return &Planner{cfg: cfg}
 }
 
-// Decide aplica las reglas de negocio de tu matriz de decisión:
-// - respeta el cooldown (anti-oscilación temporal)
-// - respeta MinInstances / MaxInstances
-// - por defecto escala de a 1 instancia (puedes cambiar a step-scaling)
 func (p *Planner) Decide(signal types.Signal, reason string, currentCount int, state types.KnowledgeState) types.Decision {
 	now := time.Now()
 

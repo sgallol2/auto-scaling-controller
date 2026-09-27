@@ -1,6 +1,3 @@
-// Package analyze implementa la fase "A" del MAPE-K. No llama a ningún API
-// de AWS: es lógica pura, fácil de testear con tabla de casos, lo que te da
-// la explicabilidad que pide el reto.
 package analyze
 
 import "autoscaler-controller/types"
@@ -13,11 +10,6 @@ func New(cfg types.Config) *Analyzer {
 	return &Analyzer{cfg: cfg}
 }
 
-// Smooth aplica (o no) Moving Average según la config, y devuelve tanto el
-// valor a usar en la decisión como la ventana actualizada para persistir.
-// Al ser una función separada, puedes desactivar MA (UseMovingAverage=false)
-// y el resto del pipeline sigue funcionando idéntico a como estaba antes:
-// threshold-based e histéresis no dependen de si el valor fue suavizado o no.
 func (a *Analyzer) Smooth(rawValue float64, previousWindow []float64) (smoothedValue float64, updatedWindow []float64) {
 	if !a.cfg.UseMovingAverage || a.cfg.MovingAverageWindow <= 0 {
 		return rawValue, previousWindow // MA desactivado o ventana inválida: pass-through
@@ -35,12 +27,6 @@ func (a *Analyzer) Smooth(rawValue float64, previousWindow []float64) (smoothedV
 	return sum / float64(len(window)), window
 }
 
-// Interpret traduce una métrica (ya suavizada o no, según Smooth) en una
-// señal, usando doble umbral (histéresis) para que el sistema no oscile
-// entre subir y bajar con pequeñas variaciones alrededor de un único punto
-// de corte. Esta función NO sabe ni le importa si el valor viene crudo o
-// suavizado -- por eso threshold+histéresis y Moving Average son
-// composables sin acoplarse entre sí.
 func (a *Analyzer) Interpret(cpuValue float64, snapshot types.MetricSnapshot, state types.KnowledgeState) (types.Signal, string) {
 	if !snapshot.HasCPUData {
 		return types.MAINTAIN_CAPACITY, "no hay datos de CPU disponibles, se espera antes de decidir"
@@ -61,9 +47,6 @@ func (a *Analyzer) Interpret(cpuValue float64, snapshot types.MetricSnapshot, st
 	}
 }
 
-// Confirm exige que la misma señal se repita N veces consecutivas
-// (EvaluationPeriods) antes de considerarla confirmada -- esto absorbe
-// picos cortos de tráfico que no ameritan escalar.
 func (a *Analyzer) Confirm(signal types.Signal, state types.KnowledgeState) bool {
 	if signal != state.LastSignal {
 		return false
